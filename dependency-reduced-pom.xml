@@ -120,7 +120,7 @@
   <properties>
     <java.version>1.8</java.version>
     <scala.binary.version>2.12</scala.binary.version>
-    <flink.cdc.version>3.1.1</flink.cdc.version>
+    <flink.cdc.version>2.4.2</flink.cdc.version>
     <flink.version>1.15.4</flink.version>
     <fastjson.version>2.0.32</fastjson.version>
   </properties>
