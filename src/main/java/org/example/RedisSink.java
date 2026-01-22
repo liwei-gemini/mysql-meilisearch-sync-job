@@ -54,10 +54,14 @@ public class RedisSink extends RichSinkFunction<String> {
             jedis.ping();
             System.out.println("Redis connection successful: " + redisHost + ":" + redisPort);
 
-            // MySQL Connection
+            // MySQL Connection - 连接到第一个数据库（用于字典查询）
+            // 注意：这里只连接第一个数据库，因为字典表在bwjc数据库中
+            String firstDatabase = mysqlDatabase.contains(",") ? 
+                mysqlDatabase.split(",")[0].trim() : mysqlDatabase;
+            
             Class.forName("com.mysql.cj.jdbc.Driver");
             String url = String.format("jdbc:mysql://%s:%d/%s?useSSL=false&characterEncoding=utf-8",
-                    mysqlHost, mysqlPort, mysqlDatabase);
+                    mysqlHost, mysqlPort, firstDatabase);
             connection = DriverManager.getConnection(url, mysqlUser, mysqlPassword);
             System.out.println("MySQL connection successful: " + url);
 
@@ -96,11 +100,33 @@ public class RedisSink extends RichSinkFunction<String> {
                 return;
             }
 
+            // [新增] 处理逻辑删除 - 根据数据库名使用不同的删除条件
+            if (after != null && isRecordDeleted(database, after)) {
+                // 逻辑删除：执行删除操作
+                String tableName = extractTableName(table);
+                if ("ba_datadict".equals(tableName)) {
+                    handleDataDict("d", before, after);
+                } else if ("ba_datadict_detail".equals(tableName)) {
+                    handleDataDictDetail("d", before, after);
+                } else if ("ba_meta_data".equals(tableName)) {
+                    handleMetaData("d", database, tableName, before, after);
+                } else if ("survey_repo".equals(tableName)) {
+                    handleSurveyRepo("d", database, tableName, before, after);
+                } else {
+                    handleGenericData("d", database, tableName, before, after);
+                }
+                return;
+            }
+
             String tableName = extractTableName(table);
             if ("ba_datadict".equals(tableName)) {
                 handleDataDict(op, before, after);
             } else if ("ba_datadict_detail".equals(tableName)) {
                 handleDataDictDetail(op, before, after);
+            } else if ("ba_meta_data".equals(tableName)) {
+                handleMetaData(op, database, tableName, before, after);
+            } else if ("survey_repo".equals(tableName)) {
+                handleSurveyRepo(op, database, tableName, before, after);
             } else {
                 handleGenericData(op, database, tableName, before, after);
             }
@@ -109,6 +135,32 @@ public class RedisSink extends RichSinkFunction<String> {
             e.printStackTrace();
             throw e; // Fail fast
         }
+    }
+
+    // [新增] 逻辑删除判断方法
+    private boolean isRecordDeleted(String database, JSONObject after) {
+        if ("bwjc".equals(database)) {
+            // bwjc数据库：useflag = 0 表示删除
+            if (after.containsKey("useflag")) {
+                Object useflag = after.get("useflag");
+                if (useflag instanceof String) {
+                    return "0".equals(useflag);
+                } else if (useflag instanceof Number) {
+                    return ((Number) useflag).intValue() == 0;
+                }
+            }
+        } else if ("surveyking".equals(database)) {
+            // surveyking数据库：deleted = 1 表示删除
+            if (after.containsKey("deleted")) {
+                Object deleted = after.get("deleted");
+                if (deleted instanceof String) {
+                    return "1".equals(deleted);
+                } else if (deleted instanceof Number) {
+                    return ((Number) deleted).intValue() == 1;
+                }
+            }
+        }
+        return false;
     }
 
     private String extractTableName(String fullTableName) {
@@ -248,6 +300,60 @@ public class RedisSink extends RichSinkFunction<String> {
                 if (id != null) {
                     String redisKey = database + ":" + table + ":" + id;
                     jedis.del(redisKey);
+                }
+            }
+        }
+    }
+
+    /**
+     * 处理 ba_meta_data 表：name 当 key，chinese_name 当 value
+     */
+    private void handleMetaData(String op, String database, String table, JSONObject before, JSONObject after) {
+        if ("c".equals(op) || "r".equals(op) || "u".equals(op)) {
+            if (after != null) {
+                String name = after.getString("name");
+                String chineseName = after.getString("chinese_name");
+                if (name != null && chineseName != null) {
+                    // 使用 name 作为 key，chinese_name 作为 value 存储到 Redis
+                    String redisKey = database + ":" + table + ":" + name;
+                    jedis.set(redisKey, chineseName);
+                    System.out.println("MetaData synced: " + redisKey + " -> " + chineseName);
+                }
+            }
+        } else if ("d".equals(op)) {
+            if (before != null) {
+                String name = before.getString("name");
+                if (name != null) {
+                    String redisKey = database + ":" + table + ":" + name;
+                    jedis.del(redisKey);
+                    System.out.println("MetaData deleted: " + redisKey);
+                }
+            }
+        }
+    }
+
+    /**
+     * 处理 survey_repo 表：code 当 key，name 当 value
+     */
+    private void handleSurveyRepo(String op, String database, String table, JSONObject before, JSONObject after) {
+        if ("c".equals(op) || "r".equals(op) || "u".equals(op)) {
+            if (after != null) {
+                String code = after.getString("code");
+                String name = after.getString("name");
+                if (code != null && name != null) {
+                    // 使用 code 作为 key，name 作为 value 存储到 Redis
+                    String redisKey = database + ":" + table + ":" + code;
+                    jedis.set(redisKey, name);
+                    System.out.println("SurveyRepo synced: " + redisKey + " -> " + name);
+                }
+            }
+        } else if ("d".equals(op)) {
+            if (before != null) {
+                String code = before.getString("code");
+                if (code != null) {
+                    String redisKey = database + ":" + table + ":" + code;
+                    jedis.del(redisKey);
+                    System.out.println("SurveyRepo deleted: " + redisKey);
                 }
             }
         }

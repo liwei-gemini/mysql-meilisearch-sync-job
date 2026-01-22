@@ -57,4 +57,25 @@ public class MeiliSearchUtil {
     public <T> String addDocuments(String indexName, List<T> documents) {
         return addDocuments(indexName, JSONUtil.toJsonStr(documents));
     }
+    /**
+     * 批量删除文档
+     *API: POST /indexes/{index_uid}/documents/delete-batch
+     */
+    public String deleteDocuments(String indexName, List<String> ids) {
+        String url = host + "/indexes/" + indexName + "/documents/delete-batch";
+        String body = JSONUtil.toJsonStr(ids);
+
+        try (HttpResponse response = HttpRequest.post(url)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .body(body)
+                .execute()) {
+
+            if (response.isOk()) {
+                return response.body();
+            } else {
+                throw new RuntimeException("Meilisearch delete error: " + response.getStatus() + " - " + response.body());
+            }
+        }
+    }
 }

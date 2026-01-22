@@ -30,6 +30,17 @@ public class MysqlToRedisJob {
                 .map(String::trim)
                 .toArray(String[]::new);
 
+        // 修复：支持多个数据库配置
+        String databaseConfig = mainParams.get("mysql.database");
+        String[] databaseList;
+        if (databaseConfig.contains(",")) {
+            databaseList = Arrays.stream(databaseConfig.split(","))
+                    .map(String::trim)
+                    .toArray(String[]::new);
+        } else {
+            databaseList = new String[]{databaseConfig};
+        }
+
         // 2. 准备 JDBC 属性 (CDC 2.x 也支持 jdbcProperties)
         Properties jdbcProps = new Properties();
         boolean enableMysql9Compat = mainParams.getBoolean("mysql.enable-mysql9-compat", false);
@@ -43,7 +54,7 @@ public class MysqlToRedisJob {
         MySqlSource<String> mySqlSource = MySqlSource.<String>builder()
                 .hostname(mainParams.get("mysql.hostname"))
                 .port(mainParams.getInt("mysql.port"))
-                .databaseList(mainParams.get("mysql.database"))
+                .databaseList(databaseList)  // 修改：使用数据库数组而不是字符串
                 .tableList(tableList)
                 .username(mainParams.get("mysql.username"))
                 .password(mainParams.get("mysql.password"))

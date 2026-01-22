@@ -1,9 +1,7 @@
 package org.example;
 
-// [关键] 使用 com.ververica 包 (CDC 2.x)
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
-
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -15,7 +13,7 @@ import java.util.Properties;
 public class MysqlToMeilisearchJob {
 
     public static void main(String[] args) throws Exception {
-        // 1. 加载配置 (注意加载的是 application-meilisearch.properties)
+        // 1. 加载配置
         ParameterTool envParams = loadEnvironmentConfig();
         ParameterTool taskParams = loadConfigFromResources("application-meilisearch.properties");
         ParameterTool mainParams = ParameterTool.fromArgs(args)
@@ -34,17 +32,13 @@ public class MysqlToMeilisearchJob {
                 .map(String::trim)
                 .toArray(String[]::new);
 
-        // 3. [核心兼容逻辑] 准备 JDBC 属性
+        // 3. JDBC 属性
         Properties jdbcProps = new Properties();
-        boolean enableMysql9Compat = mainParams.getBoolean("mysql.enable-mysql9-compat", false);
-        if (enableMysql9Compat) {
-            System.out.println(">>> [MeiliJob] 开启 MySQL 9.0+ 兼容模式 (挂载 Interceptor)");
+        if (mainParams.getBoolean("mysql.enable-mysql9-compat", false)) {
             jdbcProps.setProperty("queryInterceptors", "org.example.MySQL9CompatibilityInterceptor");
-        } else {
-            System.out.println(">>> [MeiliJob] 使用默认 MySQL 模式 (5.7/8.0)");
         }
 
-        // 4. 构建 Source (CDC 2.4.2 API)
+        // 4. 构建 Source
         MySqlSource<String> mySqlSource = MySqlSource.<String>builder()
                 .hostname(mainParams.get("mysql.hostname"))
                 .port(mainParams.getInt("mysql.port"))
@@ -62,26 +56,48 @@ public class MysqlToMeilisearchJob {
                 WatermarkStrategy.noWatermarks(),
                 "MySQL CDC Meili Source");
 
-        // 5. 转换 & 丰富数据 & Sink
+        // [新增] 读取新的索引配置，提供默认值防止报错
+        String indexPatient = mainParams.get("meilisearch.index.patient", "buPatients");
+        String indexFollowup = mainParams.get("meilisearch.index.followup", "buFollowUpPlan");
+        String indexBedside = mainParams.get("meilisearch.index.z", "buBedside");
+        String indexPatientOrg = mainParams.get("meilisearch.index.patientOrg", "buPatientOrg");
+        String indexSysUser = mainParams.get("meilisearch.index.sysUser", "sysUser");
+        String indexSysOrg = mainParams.get("meilisearch.index.sysOrg", "sysOrg");
+        
+        // [新增] 读取Redis配置
+        String redisHost = mainParams.get("redis.host");
+        int redisPort = mainParams.getInt("redis.port", 6379);
+        String redisPassword = mainParams.get("redis.password", "");
+        
+        // 5. 转换 & Sink
         streamSource
-                .map(new RecordEnricherMapFunction(
+                .flatMap(new RecordEnricherFlatMapFunction(
                         mainParams.get("mysql.hostname"),
                         mainParams.getInt("mysql.port"),
-                        mainParams.get("mysql.database"), // Note: db list usually passed to source, here we need one
-                                                          // for JDBC.
-                                                          // Be careful if multiple DBs. Assuming mysql.database is
-                                                          // single or main one.
+                        mainParams.get("mysql.database"),
                         mainParams.get("mysql.username"),
-                        mainParams.get("mysql.password")))
+                        mainParams.get("mysql.password"),
+                        redisHost, // [新增] Redis主机
+                        redisPort, // [新增] Redis端口
+                        redisPassword, // [新增] Redis密码
+                        indexPatient, // [新增] 传入患者索引名
+                        indexFollowup, // [新增] 传入随访索引名
+                        indexBedside, // [新增] 传入床位索引名
+                        indexPatientOrg, // [新增] 传入机构索引名
+                        indexSysUser, // [新增] 传入用户索引名
+                        indexSysOrg // [新增] 传入组织索引名
+                ))
                 .addSink(new MeilisearchSink(
                         mainParams.get("meilisearch.host"),
                         mainParams.get("meilisearch.apiKey"),
-                        mainParams.get("meilisearch.index")));
+                        indexPatient // 默认索引，实际上会由 MapFunction 覆盖
+                ));
 
         env.execute("MySQL to Meilisearch Sync Job");
     }
 
-    // --- 辅助方法 ---
+    // ... (辅助方法保持不变 loadEnvironmentConfig, loadConfigFromResources,
+    // checkRequiredConfig)
     private static ParameterTool loadEnvironmentConfig() {
         try {
             ParameterTool mainProps = ParameterTool.fromPropertiesFile(
